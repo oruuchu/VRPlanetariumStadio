@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>ドームマスター録画＆オンデマンド正距円筒コンバーター (1024px / 360°メタデータ自動埋め込みMP4版)</title>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.17/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/ofrohn/d3-celestial/celestial.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/ofrohn/d3-celestial/celestial.css">
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.min.js"></script>
+
+  <style>
+    body {
+      background-color: #111;
+      color: #fff;
+      font-family: sans-serif;
+      margin: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .controls {
+      background: #222;
+      padding: 15px 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      align-items: center;
+      width: 600px;
+      box-sizing: border-box;
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+    }
+
+    label { font-size: 13px; }
+
+    input[type="datetime-local"], input[type="number"] {
+      padding: 5px 8px;
+      border-radius: 4px;
+      border: 1px solid #444;
+      background: #333;
+      color: #fff;
+      font-size: 13px;
+    }
+
+    input[type="number"] { width: 80px; }
+    input[type="range"] { accent-color: #0066cc; cursor: pointer; }
+
+    .btn-group { display: flex; gap: 8px; }
+
+    button {
+      padding: 6px 14px;
+      border: none;
+      background: #0066cc;
+      color: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover { background: #0052a3; }
+    button:disabled { background: #444; color: #888; cursor: not-allowed; }
+    button.active { background: #cc3333; }
+    button.rec { background: #cc0000; }
+    button.rec:hover { background: #990000; }
+    button.rec.recording {
+      background: #ff9900;
+      animation: pulse 1s infinite alternate;
+    }
+
+    @keyframes pulse {
+      from { opacity: 1; }
+      to { opacity: 0.6; }
+    }
+
+    #celestial-map {
+      width: 600px !important;
+      height: 600px !important;
+      position: relative;
+      background: #000;
+      flex-shrink: 0;
+      box-sizing: border-box;
+      overflow: hidden;
+      border-radius: 50%;
+      border: 2px solid #333;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #celestial-map canvas,
+    #celestial-map svg {
+      width: 600px !important;
+      height: 600px !important;
+      position: absolute !important;
+      top: 50% !important;
+      left: 50% !important;
+      transform: translate(-50%, -50%) !important;
+    }
+
+    /* 赤道・黄道・グリッドなどの線をCSSレベルでも強制的に完全非表示に指定 */
+    #celestial-map svg path.eq,
+    #celestial-map svg path.ec,
+    #celestial-map svg path.graticule,
+    #celestial-map svg path.lat,
+    #celestial-map svg path.lon,
+    #celestial-map svg path.meridian,
+    #celestial-map svg path.galactic,
+    #celestial-map svg g[class*="lat"],
+    #celestial-map svg g[class*="lon"],
+    #celestial-map svg g[class*="eq"],
+    #celestial-map svg g[class*="ec"],
+    #celestial-map svg g[class*="graticule"],
+    #celestial-map svg .lines {
+      display: none !important;
+      visibility: hidden !important;
+      opacity: 0 !important;
+      stroke: none !important;
+    }
+
+    #info-display { font-size: 12px; color: #aaa; margin-top: 5px; display: flex; gap: 15px; }
+
+    .export-panel {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      padding: 10px 15px;
+      border-radius: 6px;
+      margin-top: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    #hidden-video, #gl-canvas { display: none; }
+  </style>
+</head>
+<body>
+
+  <div class="controls">
+    <div class="row">
+      <div>
+        <label for="datetime-input">日時: </label>
+        <input type="datetime-local" id="datetime-input">
+      </div>
+      <button onclick="setNow()">現在日時</button>
+      <button onclick="setNoon()">正午(12:00)</button>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="lat-input">緯度 (°N): </label>
+        <input type="number" id="lat-input" step="0.0001" value="35">
+      </div>
+      <div>
+        <label for="lon-input">経度 (°E): </label>
+        <input type="number" id="lon-input" step="0.0001" value="135">
+      </div>
+      <button onclick="updateLocation()">位置を反映</button>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="limit-slider">最微等級 (基準): <span id="limit-val">6.0</span>等級</label>
+        <input type="range" id="limit-slider" min="2.0" max="8.0" step="0.1" value="6.0" oninput="updateLimitMagnitude()">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="btn-group">
+        <button id="play-btn" onclick="togglePlay()">▶ 再生</button>
+        <button id="rec-btn" class="rec" onclick="toggleRecord()">🔴 録画（1024x1024）</button>
+      </div>
+
+      <div>
+        <label for="step-input">進行幅: </label>
+        <input type="number" id="step-input" step="any" value="1" onchange="updateStep()">
+        <span style="font-size: 13px;">分 / フレーム</span>
+      </div>
+    </div>
+
+    <div class="export-panel">
+      <span id="status-label" style="font-size: 13px; color: #888;">録画データなし</span>
+      <div class="btn-group">
+        <button id="dl-dome-btn" onclick="downloadDomeVideo()" disabled>ドーム保存 (MP4)</button>
+        <button id="convert-btn" onclick="convertAndDownloadEquirect()" disabled style="background:#28a745;">正距円筒へ変換 (360° MP4)</button>
+      </div>
+    </div>
+    
+    <div id="info-display">
+      <span>太陽高度: <span id="sun-alt-val">0</span>°</span>
+      <span>実効最微等級: <span id="effective-limit-val">6.0</span></span>
+    </div>
+  </div>
+
+  <div id="celestial-map"></div>
+
+  <video id="hidden-video" playsinline muted></video>
+  <canvas id="gl-canvas" width="2048" height="1024"></canvas>
+
+  <script>
+    let currentDate = new Date();
+    let currentLat = 35.0;
+    let currentLon = 135.0;
+
+    let isPlaying = false;
+    let animationFrameId = null;
+    let stepMinutes = 1;
+
+    const targetFPS = 15;
+    let lastFrameTime = 0;
+
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let recordedDomeBlob = null;
+    let isRecording = false;
+    let audioStream = null;
+
+    let isMouseDown = false;
+    let pointerX = 0;
+    let pointerY = 0;
+
+    let gl = null;
+    let glProgram = null;
+    let glTexture = null;
+
+    let baseLimitMag = 6.0;
+    let lastAppliedLimit = null;
+    let lastMwConfig = null;
+
+    const config = {
+      width: 1024,
+      projection: "azimuthalEquidistant",
+      center: [0, 0, 0],
+      orientationlimit: [0, 90],
+      container: "celestial-map",
+      datapath: "https://cdn.jsdelivr.net/gh/ofrohn/d3-celestial/data/",
+      interactive: false,
+      form: false,
+      controls: false,
+      stars: { show: true, limit: 6.0, propername: false, designation: false },
+      dsos: { show: false },
+      planets: { show: true, which: ["lun", "mer", "ven", "mar", "jup", "sat"] },
+      constellations: { show: false, names: false, desig: false, lines: false, bounds: false },
+      lines: { 
+        graticule: { show: false }, 
+        equator: { show: false }, 
+        ecliptic: { show: false },
+        galactic: { show: false },
+        meridian: { show: false }
+      },
+      mw: { show: true, style: { fill: "#ffffff", opacity: 0.15 } }
+    };
+
+    function init() {
+      updateInputValue(currentDate);
+
+      document.getElementById("datetime-input").addEventListener("change", (e) => {
+        if (e.target.value) {
+          currentDate = new Date(e.target.value);
+          renderFrame();
+        }
+      });
+
+      document.getElementById("lat-input").addEventListener("change", updateLocation);
+      document.getElementById("lon-input").addEventListener("change", updateLocation);
+
+      Celestial.display(config);
+      updateLocation();
+      
+      setupMouseEvents();
+      initWebGL();
+
+      renderFrame();
+    }
+
+    function initWebGL() {
+      const glCanvas = document.getElementById("gl-canvas");
+      gl = glCanvas.getContext("webgl");
+      if (!gl) return;
+
+      const vsSource = `
+        attribute vec2 aPosition;
+        varying vec2 vTexCoord;
+        void main() {
+          vTexCoord = (aPosition + 1.0) / 2.0;
+          vTexCoord.y = 1.0 - vTexCoord.y;
+          gl_Position = vec4(aPosition, 0.0, 1.0);
+        }
+      `;
+
+      const fsSource = `
+        precision mediump float;
+        uniform sampler2D uTexture;
+        varying vec2 vTexCoord;
+        const float PI = 3.14159265359;
+
+        void main() {
+          float lon = (vTexCoord.x - 0.5) * 2.0 * PI;
+          float lat = (0.5 - vTexCoord.y) * PI;
+
+          float thetaZ = PI / 2.0 - lat;
+          if (thetaZ > PI / 2.0) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+          }
+
+          float r = thetaZ / (PI / 2.0);
+          float domeX = 0.5 + r * 0.5 * sin(lon);
+          float domeY = 0.5 - r * 0.5 * cos(lon);
+
+          if (domeX < 0.0 || domeX > 1.0 || domeY < 0.0 || domeY > 1.0) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+          } else {
+            gl_FragColor = texture2D(uTexture, vec2(domeX, domeY));
+          }
+        }
+      `;
+
+      const createShader = (type, src) => {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, src);
+        gl.compileShader(shader);
+        return shader;
+      };
+
+      const program = gl.createProgram();
+      gl.attachShader(program, createShader(gl.VERTEX_SHADER, vsSource));
+      gl.attachShader(program, createShader(gl.FRAGMENT_SHADER, fsSource));
+      gl.linkProgram(program);
+      gl.useProgram(program);
+      glProgram = program;
+
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,  1, -1, -1,  1,
+        -1,  1,  1, -1,  1,  1
+      ]), gl.STATIC_DRAW);
+
+      const aPos = gl.getAttribLocation(program, "aPosition");
+      gl.enableVertexAttribArray(aPos);
+      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+      glTexture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, glTexture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    }
+
+    function setupMouseEvents() {
+      const container = document.getElementById("celestial-map");
+
+      const updatePointerPos = (e) => {
+        const canvas = container.querySelector("canvas");
+        if (!canvas) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+
+        pointerX = (e.clientX - rect.left) * scaleX;
+        pointerY = (e.clientY - rect.top) * scaleY;
+        
+        if (!isPlaying) renderFrame();
+      };
+
+      container.addEventListener("mousedown", (e) => {
+        isMouseDown = true;
+        updatePointerPos(e);
+      });
+
+      window.addEventListener("mousemove", (e) => {
+        if (isMouseDown) updatePointerPos(e);
+      });
+
+      window.addEventListener("mouseup", () => {
+        if (isMouseDown) {
+          isMouseDown = false;
+          if (!isPlaying) renderFrame();
+        }
+      });
+    }
+
+    function updateLimitMagnitude() {
+      const slider = document.getElementById("limit-slider");
+      baseLimitMag = parseFloat(slider.value);
+      document.getElementById("limit-val").innerText = baseLimitMag.toFixed(1);
+      renderFrame();
+    }
+
+    function removeUnwantedLines() {
+      const container = document.getElementById("celestial-map");
+      if (!container) return;
+      const allPaths = container.querySelectorAll("svg path");
+      allPaths.forEach(path => {
+        const stroke = path.getAttribute("stroke");
+        if (stroke && stroke !== "none" && stroke !== "" && stroke !== "#fff" && stroke !== "#ffffff") {
+          if (!path.parentNode.classList.contains('constellations') && !path.parentNode.classList.contains('stars')) {
+            path.remove();
+          }
+        }
+      });
+    }
+
+    function renderFrame() {
+      let effectiveLimit = baseLimitMag;
+      let showStars = true;
+      let showMw = true;
+      let mwOpacity = 0.15;
+
+      if (typeof SunCalc !== "undefined") {
+        const sunPos = SunCalc.getPosition(currentDate, currentLat, currentLon);
+        const sunAlt = sunPos.altitude * (180 / Math.PI);
+
+        const altDisplay = document.getElementById("sun-alt-val");
+        if (altDisplay) altDisplay.innerText = sunAlt.toFixed(1);
+
+        // 最低限の基準値（例: 3.5等級未満なら天の川は出さない）
+        const magFactor = Math.max(0, (baseLimitMag - 3.5) / 4.5);
+
+        if (sunAlt >= 0) {
+          effectiveLimit = -1.0;
+          showStars = false;
+          showMw = false;
+          mwOpacity = 0.0;
+        } else if (sunAlt > -18) {
+          const factor = (sunAlt + 18) / 18; 
+          effectiveLimit = baseLimitMag - (factor * 5.0);
+          if (effectiveLimit < -1.0) effectiveLimit = -1.0;
+          
+          showStars = effectiveLimit >= -0.5;
+
+          const twilightFactor = (sunAlt + 18) / 18;
+          // 薄明中は太陽高度による減衰と、最微等級の制限を両方かけ、逆転現象を完全に防ぐ
+          mwOpacity = 0.2 * (1.0 - twilightFactor) * magFactor;
+          showMw = mwOpacity > 0.01 && showStars && baseLimitMag >= 3.5;
+        } else {
+          showStars = true;
+          if (baseLimitMag < 3.5) {
+            mwOpacity = 0.0;
+            showMw = false;
+          } else {
+            mwOpacity = 0.2 * magFactor;
+            showMw = mwOpacity > 0.01;
+          }
+        }
+
+        const effDisplay = document.getElementById("effective-limit-val");
+        if (effDisplay) effDisplay.innerText = showStars ? effectiveLimit.toFixed(1) : "非表示";
+      }
+
+      const mwConfigKey = `${showMw}_${mwOpacity.toFixed(3)}`;
+      if (lastAppliedLimit !== effectiveLimit || lastMwConfig !== mwConfigKey) {
+        lastAppliedLimit = effectiveLimit;
+        lastMwConfig = mwConfigKey;
+        Celestial.apply({
+          stars: { show: showStars, limit: effectiveLimit },
+          mw: { show: showMw, style: { fill: "#ffffff", opacity: mwOpacity } },
+          lines: { 
+            graticule: { show: false }, 
+            equator: { show: false }, 
+            ecliptic: { show: false },
+            galactic: { show: false },
+            meridian: { show: false }
+          }
+        });
+      }
+
+      Celestial.date(currentDate);
+      updateInputValue(currentDate);
+      removeUnwantedLines();
+      drawCustomElements();
+    }
+
+    function loop(timestamp) {
+      if (!isPlaying) return;
+
+      const interval = 1000 / targetFPS;
+      if (timestamp - lastFrameTime >= interval) {
+        lastFrameTime = timestamp - ((timestamp - lastFrameTime) % interval);
+
+        currentDate.setTime(currentDate.getTime() + stepMinutes * 60 * 1000);
+        renderFrame();
+      }
+
+      animationFrameId = requestAnimationFrame(loop);
+    }
+
+    function drawCustomElements() {
+      if (typeof SunCalc === "undefined") return;
+
+      const container = document.getElementById("celestial-map");
+      const canvas = container.querySelector("canvas");
+      if (!canvas) return;
+
+      const ctx = canvas.getContext("2d");
+      const width = canvas.width;
+      const height = canvas.height;
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const radius = width / 2;
+
+      const sunPos = SunCalc.getPosition(currentDate, currentLat, currentLon);
+      const sunAlt = sunPos.altitude * (180 / Math.PI);
+
+      ctx.save();
+
+      ctx.globalCompositeOperation = 'destination-over';
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, width, height);
+      ctx.globalCompositeOperation = 'source-over';
+
+      if (sunAlt > -18) {
+        const grad = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+        if (sunAlt >= 6) {
+          grad.addColorStop(0, "rgba(70, 130, 180, 0.6)");
+          grad.addColorStop(1, "rgba(135, 206, 235, 0.8)");
+        } else if (sunAlt > -6 && sunAlt < 6) {
+          const factor = (sunAlt + 6) / 12;
+          grad.addColorStop(0, "rgba(15, 20, 45, 0.5)");
+          grad.addColorStop(0.6, "rgba(180, 70, 50, 0.6)");
+          grad.addColorStop(1, `rgba(240, 120, 50, ${0.85 - factor * 0.2})`);
+        } else {
+          const factor = (sunAlt + 18) / 12;
+          grad.addColorStop(0, `rgba(5, 10, 25, ${0.2 + factor * 0.3})`);
+          grad.addColorStop(1, `rgba(80, 40, 60, ${0.2 + factor * 0.3})`);
+        }
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (sunAlt >= 0) {
+        const r = radius * (1 - sunAlt / 90);
+        const angle = -sunPos.azimuth + Math.PI / 2;
+        
+        const sunX = centerX + r * Math.cos(angle);
+        const sunY = centerY + r * Math.sin(angle);
+
+        const sunGlow = ctx.createRadialGradient(sunX, sunY, 5, sunX, sunY, 34);
+        sunGlow.addColorStop(0, "#ffffff");
+        sunGlow.addColorStop(0.3, "#ffea00");
+        sunGlow.addColorStop(1, "rgba(255, 200, 0, 0)");
+
+        ctx.fillStyle = sunGlow;
+        ctx.beginPath();
+        ctx.arc(sunX, sunY, 34, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffdd00";
+        ctx.beginPath();
+        ctx.arc(sunX, sunY, 11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (isMouseDown) {
+        ctx.fillStyle = "#ffffff";
+        ctx.beginPath();
+        ctx.arc(pointerX, pointerY, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#ff0000";
+        ctx.beginPath();
+        ctx.arc(pointerX, pointerY, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    function toggleRecord() {
+      if (!isRecording) {
+        startRecording();
+      } else {
+        stopRecording();
+      }
+    }
+
+    function getSupportedMimeType() {
+      const types = [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4;codecs=avc1,mp4a.40.2',
+        'video/mp4',
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm'
+      ];
+      for (const t of types) {
+        if (MediaRecorder.isTypeSupported(t)) return t;
+      }
+      return '';
+    }
+
+    async function startRecording() {
+      const canvas = document.querySelector("#celestial-map canvas");
+      if (!canvas) return;
+
+      try {
+        const canvasStream = canvas.captureStream(15);
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        const combinedStream = new MediaStream([
+          ...canvasStream.getVideoTracks(),
+          ...audioStream.getAudioTracks()
+        ]);
+
+        const mimeType = getSupportedMimeType();
+        const options = mimeType ? { mimeType } : {};
+
+        recordedChunks = [];
+        mediaRecorder = new MediaRecorder(combinedStream, options);
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) recordedChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = onRecordingStopped;
+        mediaRecorder.start(1000);
+        isRecording = true;
+
+        const btn = document.getElementById("rec-btn");
+        btn.innerText = "⏹ 録画停止";
+        btn.classList.add("recording");
+
+        document.getElementById("status-label").innerText = "🔴 録画中...";
+        document.getElementById("dl-dome-btn").disabled = true;
+        document.getElementById("convert-btn").disabled = true;
+      } catch (err) {
+        console.error("マイクの取得に失敗しました:", err);
+        alert("マイクへのアクセスが許可されていないか、利用できません。");
+      }
+    }
+
+    function stopRecording() {
+      if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+      mediaRecorder.stop();
+
+      if (audioStream) {
+        audioStream.getTracks().forEach(track => track.stop());
+        audioStream = null;
+      }
+
+      isRecording = false;
+
+      const btn = document.getElementById("rec-btn");
+      btn.innerText = "🔴 録画（1024x1024）";
+      btn.classList.remove("recording");
+    }
+
+    function onRecordingStopped() {
+      const mimeType = mediaRecorder.mimeType || "video/mp4";
+      recordedDomeBlob = new Blob(recordedChunks, { type: mimeType });
+      
+      document.getElementById("status-label").innerText = "録画完了 (1024x1024 保持中)";
+      document.getElementById("status-label").style.color = "#00ffcc";
+      document.getElementById("dl-dome-btn").disabled = false;
+      document.getElementById("convert-btn").disabled = false;
+    }
+
+    function downloadDomeVideo() {
+      if (!recordedDomeBlob) return;
+      const url = URL.createObjectURL(recordedDomeBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `planetarium_dome_${currentDate.toISOString().slice(0, 10)}.mp4`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function injectSpatialMetadataMP4(buffer) {
+      const data = new Uint8Array(buffer);
+      const view = new DataView(buffer);
+
+      function findBox(start, end, type) {
+        let pos = start;
+        while (pos < end - 8) {
+          const size = view.getUint32(pos);
+          const t = String.fromCharCode(data[pos+4], data[pos+5], data[pos+6], data[pos+7]);
+          if (t === type) return { pos, size };
+          if (size <= 1) break;
+          pos += size;
+        }
+        return null;
+      }
+
+      const st3dBox = new Uint8Array([
+        0, 0, 0, 13, 115, 116, 51, 100, 0, 0, 0, 0, 0
+      ]);
+
+      const svhdBox = new Uint8Array([
+        0, 0, 0, 13, 115, 118, 104, 100, 0, 0, 0, 0, 0
+      ]);
+
+      const projBox = new Uint8Array([
+        0, 0, 0, 24, 112, 114, 111, 106,
+        0, 0, 0, 16, 112, 114, 104, 100, 0, 0, 0, 0,
+        0, 0, 0, 24, 101, 113, 114, 116, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+      ]);
+
+      const sv3dBoxLength = 8 + st3dBox.length + svhdBox.length + projBox.length;
+      const sv3dBox = new Uint8Array(sv3dBoxLength);
+      const sv3dView = new DataView(sv3dBox.buffer);
+      sv3dView.setUint32(0, sv3dBoxLength);
+      sv3dBox.set([115, 118, 51, 100], 4);
+      let offset = 8;
+      sv3dBox.set(st3dBox, offset); offset += st3dBox.length;
+      sv3dBox.set(svhdBox, offset); offset += svhdBox.length;
+      sv3dBox.set(projBox, offset);
+
+      const moov = findBox(0, data.length, 'moov');
+      if (!moov) return buffer;
+
+      const stsd = (function findStsd(start, end) {
+        let pos = start;
+        while (pos < end - 8) {
+          const size = view.getUint32(pos);
+          const t = String.fromCharCode(data[pos+4], data[pos+5], data[pos+6], data[pos+7]);
+          if (t === 'stsd') return { pos, size };
+          if (['trak', 'mdia', 'minf', 'stbl'].includes(t)) {
+            const res = findStsd(pos + 8, pos + size);
+            if (res) return res;
+          }
+          if (size <= 1) break;
+          pos += size;
+        }
+        return null;
+      })(moov.pos + 8, moov.pos + moov.size);
+
+      if (!stsd) return buffer;
+
+      const sampleEntryPos = stsd.pos + 16;
+      const sampleEntrySize = view.getUint32(sampleEntryPos);
+
+      const targetInsertPos = sampleEntryPos + sampleEntrySize;
+
+      const result = new Uint8Array(data.length + sv3dBoxLength);
+      result.set(data.subarray(0, targetInsertPos), 0);
+      result.set(sv3dBox, targetInsertPos);
+      result.set(data.subarray(targetInsertPos), targetInsertPos + sv3dBoxLength);
+
+      const resView = new DataView(result.buffer);
+
+      const updateSize = (pos) => {
+        const current = resView.getUint32(pos);
+        resView.setUint32(pos, current + sv3dBoxLength);
+      };
+
+      updateSize(sampleEntryPos);
+      updateSize(stsd.pos);
+
+      let curr = moov.pos + 8;
+      while (curr < moov.pos + moov.size) {
+        const sz = view.getUint32(curr);
+        const t = String.fromCharCode(data[curr+4], data[curr+5], data[curr+6], data[curr+7]);
+        if (['trak', 'mdia', 'minf', 'stbl'].includes(t)) {
+          updateSize(curr);
+        }
+        if (sz <= 1) break;
+        curr += sz;
+      }
+      updateSize(moov.pos);
+
+      return result.buffer;
+    }
+
+    async function convertAndDownloadEquirect() {
+      if (!recordedDomeBlob) return;
+
+      const statusLabel = document.getElementById("status-label");
+      const convertBtn = document.getElementById("convert-btn");
+      
+      statusLabel.innerText = "正距円筒へ変換中...";
+      statusLabel.style.color = "#ffaa00";
+      convertBtn.disabled = true;
+
+      const video = document.getElementById("hidden-video");
+      const glCanvas = document.getElementById("gl-canvas");
+      const videoUrl = URL.createObjectURL(recordedDomeBlob);
+      video.src = videoUrl;
+
+      await video.play();
+
+      const glStream = glCanvas.captureStream(15);
+      
+      let combinedStream = glStream;
+      if (video.captureStream) {
+        const origStream = video.captureStream();
+        const audioTracks = origStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          combinedStream = new MediaStream([
+            ...glStream.getVideoTracks(),
+            ...audioTracks
+          ]);
+        }
+      }
+
+      const mimeType = getSupportedMimeType();
+      const options = mimeType ? { mimeType } : {};
+
+      const outChunks = [];
+      const outRecorder = new MediaRecorder(combinedStream, options);
+
+      outRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) outChunks.push(e.data);
+      };
+
+      outRecorder.onstop = async () => {
+        statusLabel.innerText = "360° メタデータ埋め込み中...";
+        
+        const outMime = outRecorder.mimeType || "video/mp4";
+        const rawBlob = new Blob(outChunks, { type: outMime });
+        
+        const arrayBuffer = await rawBlob.arrayBuffer();
+        
+        let finalBuffer = arrayBuffer;
+        try {
+          finalBuffer = injectSpatialMetadataMP4(arrayBuffer);
+        } catch (e) {
+          console.warn("メタデータの注入に失敗しました。元の動画を出力します:", e);
+        }
+
+        const equirectBlob = new Blob([finalBuffer], { type: "video/mp4" });
+        const url = URL.createObjectURL(equirectBlob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `planetarium_equirect_360_${currentDate.toISOString().slice(0, 10)}.mp4`;
+        a.click();
+
+        URL.revokeObjectURL(videoUrl);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        statusLabel.innerText = "変換・ダウンロード完了!";
+        statusLabel.style.color = "#00ffcc";
+        convertBtn.disabled = false;
+      };
+
+      outRecorder.start(1000);
+
+      let lastConvertFrameTime = 0;
+      const convertInterval = 1000 / 15;
+
+      function processFrame(timestamp) {
+        if (video.ended || video.paused) {
+          outRecorder.stop();
+          return;
+        }
+
+        if (timestamp - lastConvertFrameTime >= convertInterval) {
+          lastConvertFrameTime = timestamp - ((timestamp - lastConvertFrameTime) % convertInterval);
+
+          gl.bindTexture(gl.TEXTURE_2D, glTexture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+          gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+
+        requestAnimationFrame(processFrame);
+      }
+
+      requestAnimationFrame(processFrame);
+    }
+
+    function updateLocation() {
+      const latVal = parseFloat(document.getElementById("lat-input").value);
+      const lonVal = parseFloat(document.getElementById("lon-input").value);
+      if (!isNaN(latVal) && !isNaN(lonVal)) {
+        currentLat = latVal;
+        currentLon = lonVal;
+        Celestial.location([currentLat, currentLon]);
+        renderFrame();
+      }
+    }
+
+    function updateInputValue(date) {
+      const input = document.getElementById("datetime-input");
+      const tzOffset = date.getTimezoneOffset() * 60000;
+      input.value = (new Date(date - tzOffset)).toISOString().slice(0, 16);
+    }
+
+    function togglePlay() {
+      isPlaying = !isPlaying;
+      const btn = document.getElementById("play-btn");
+      if (isPlaying) {
+        btn.innerText = "❚❚ 停止";
+        btn.classList.add("active");
+        lastFrameTime = performance.now();
+        animationFrameId = requestAnimationFrame(loop);
+      } else {
+        btn.innerText = "▶ 再生";
+        btn.classList.remove("active");
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);
+          animationFrameId = null;
+        }
+      }
+    }
+
+    function updateStep() {
+      const val = parseFloat(document.getElementById("step-input").value);
+      stepMinutes = isNaN(val) ? 1 : val;
+    }
+
+    function setNow() { currentDate = new Date(); renderFrame(); }
+    function setNoon() { currentDate.setHours(12, 0, 0, 0); renderFrame(); }
+
+    window.onload = init;
+  </script>
+</body>
+</html>
